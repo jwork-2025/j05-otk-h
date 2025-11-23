@@ -1,35 +1,37 @@
 package com.gameengine.recording;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 public class FileRecordingStorage implements RecordingStorage {
     private BufferedWriter writer;
+    private String currentPath;
 
     @Override
     public void openWriter(String path) throws IOException {
-        Path p = Paths.get(path);
-        if (p.getParent() != null) Files.createDirectories(p.getParent());
-        writer = Files.newBufferedWriter(p);
+        this.currentPath = path;
+        File file = new File(path);
+        file.getParentFile().mkdirs();
+        this.writer = new BufferedWriter(new FileWriter(file));
     }
 
     @Override
     public void writeLine(String line) throws IOException {
-        if (writer == null) throw new IllegalStateException("writer not opened");
-        writer.write(line);
-        writer.newLine();
+        if (writer != null) {
+            writer.write(line);
+            writer.newLine();
+        }
     }
 
     @Override
     public void closeWriter() {
         if (writer != null) {
-            try { writer.flush(); } catch (Exception ignored) {}
-            try { writer.close(); } catch (Exception ignored) {}
+            try {
+                writer.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
             writer = null;
         }
     }
@@ -37,9 +39,9 @@ public class FileRecordingStorage implements RecordingStorage {
     @Override
     public Iterable<String> readLines(String path) throws IOException {
         List<String> lines = new ArrayList<>();
-        try (BufferedReader br = Files.newBufferedReader(Paths.get(path))) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(path))) {
             String line;
-            while ((line = br.readLine()) != null) {
+            while ((line = reader.readLine()) != null) {
                 lines.add(line);
             }
         }
@@ -48,13 +50,16 @@ public class FileRecordingStorage implements RecordingStorage {
 
     @Override
     public List<File> listRecordings() {
-        File dir = new File("recordings");
-        if (!dir.exists() || !dir.isDirectory()) return new ArrayList<>();
-        File[] files = dir.listFiles((d, name) -> name.endsWith(".json") || name.endsWith(".jsonl"));
-        if (files == null) return new ArrayList<>();
-        Arrays.sort(files, (a,b) -> Long.compare(b.lastModified(), a.lastModified()));
-        return new ArrayList<>(Arrays.asList(files));
+        List<File> recordings = new ArrayList<>();
+        File recordingsDir = new File("recordings");
+        if (recordingsDir.exists() && recordingsDir.isDirectory()) {
+            File[] files = recordingsDir.listFiles((dir, name) -> name.endsWith(".json"));
+            if (files != null) {
+                for (File file : files) {
+                    recordings.add(file);
+                }
+            }
+        }
+        return recordings;
     }
 }
-
-

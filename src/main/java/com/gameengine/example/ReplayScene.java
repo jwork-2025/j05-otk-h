@@ -1,307 +1,354 @@
 package com.gameengine.example;
 
-import com.gameengine.components.TransformComponent;
-import com.gameengine.core.GameEngine;
-import com.gameengine.core.GameObject;
-import com.gameengine.graphics.IRenderer;
-import com.gameengine.input.InputManager;
-import com.gameengine.math.Vector2;
 import com.gameengine.scene.Scene;
-import com.gameengine.example.EntityFactory;
+import com.gameengine.core.GameEngine;
+import com.gameengine.core.GameLogic;
+import com.gameengine.core.GameObject;
+import com.gameengine.math.Vector2;
+import com.gameengine.graphics.IRenderer;
+import com.gameengine.components.*;
+import com.gameengine.input.ReplayInputManager;
+import com.gameengine.recording.RecordingParser;
+import com.gameengine.recording.KeyFrame;
 
-import java.io.File;
-import java.util.*;
+import java.util.Random;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
+import java.io.IOException;
 
 public class ReplayScene extends Scene {
-    private final GameEngine engine;
-    private String recordingPath;
+    public final GameEngine engine;
     private IRenderer renderer;
-    private InputManager input;
-    private float time;
-    private boolean DEBUG_REPLAY = false;
-    private float debugAccumulator = 0f;
+    private Random random;
+    private GameLogic gameLogic;
+    private ReplayInputManager replayInputManager;
+    private String recordingFilePath;
+    
+    private List<KeyFrame> keyframes;
+    private Map<Integer, GameObject> enemyIdMap; // 敌人ID到GameObject的映射
+    private Map<Integer, GameObject> playerIdMap; // 玩家ID到GameObject的映射
+    private double replayTime;
+    private int currentKeyframeIndex;
 
-    private static class Keyframe {
-        static class EntityInfo {
-            Vector2 pos;
-            String rt; // RECTANGLE/CIRCLE/LINE/CUSTOM/null
-            float w, h;
-            float r=0.9f,g=0.9f,b=0.2f,a=1.0f; // 默认颜色
-            String id;
-        }
-        double t;
-        java.util.List<EntityInfo> entities = new ArrayList<>();
-    }
-
-    private final List<Keyframe> keyframes = new ArrayList<>();
-    private final java.util.List<GameObject> objectList = new ArrayList<>();
-
-    // 如果 path 为 null，则先展示 recordings 目录下的文件列表，供用户选择
-    public ReplayScene(GameEngine engine, String path) {
-        super("Replay");
+    public ReplayScene(GameEngine engine, String recordingFilePath) {
+        super("ReplayScene");
         this.engine = engine;
-        this.recordingPath = path;
+        this.recordingFilePath = recordingFilePath;
     }
-
+    
     @Override
     public void initialize() {
         super.initialize();
         this.renderer = engine.getRenderer();
-        this.input = engine.getInputManager();
-        // 重置状态，防止从列表进入后残留
-        this.time = 0f;
-        this.keyframes.clear();
-        this.objectList.clear();
-        if (recordingPath != null) {
-            loadRecording(recordingPath);
-            buildObjectsFromFirstKeyframe();
+        this.random = new Random();
+        this.replayTime = 0.0;
+        this.currentKeyframeIndex = 0;
+        this.enemyIdMap = new HashMap<>();
+        this.playerIdMap = new HashMap<>();
+        
+        // 初始化回放输入管理器
+        this.replayInputManager = ReplayInputManager.getInstance();
+        
+        try {
+            // 加载录制数据
+            var inputEvents = RecordingParser.parseRecordingFile(recordingFilePath);
+            replayInputManager.loadRecording(inputEvents);
+            System.out.println("加载录制文件成功: " + recordingFilePath + ", 输入事件数量: " + inputEvents.size());
             
-        } else {
-            // 仅进入文件选择模式
-            this.recordingFiles = null;
-            this.selectedIndex = 0;
+            // 加载快照数据
+            this.keyframes = RecordingParser.parseSnapshotFile(recordingFilePath);
+            System.out.println("加载快照数据成功: " + recordingFilePath + ", 快照数量: " + keyframes.size());
+        } catch (IOException e) {
+            System.err.println("加载录制文件失败: " + recordingFilePath);
+            e.printStackTrace();
+            // 如果加载失败，返回菜单
+            returnToMenu();
+            return;
         }
-    }
 
+        // 创建游戏逻辑，使用回放输入管理器
+        this.gameLogic = new GameLogic(this);
+        this.gameLogic.setInputManager(replayInputManager);
+
+        // 创建玩家对象
+        createPlayer();
+        createDecorations();
+        createUIArea();
+    }
+    
     @Override
     public void update(float deltaTime) {
         super.update(deltaTime);
-        if (input.isKeyJustPressed(27) || input.isKeyJustPressed(8)) { // ESC/BACK
-            engine.setScene(new MenuScene(engine, "MainMenu"));
-            return;
-        }
-        // 文件选择模式
-        if (recordingPath == null) {
-            handleFileSelection();
+        replayTime += deltaTime;
+
+        // 更新回放输入管理器
+        replayInputManager.update(deltaTime);
+
+        // 使用游戏逻辑类处理游戏规则
+        gameLogic.handlePlayerInput();
+        gameLogic.handleEnemyShooting();
+        gameLogic.updatePhysics();
+        gameLogic.checkCollisions();
+
+        // 检查是否需要返回菜单
+        if (gameLogic.getGameState() == GameLogic.GameState.GAME_OVER) {
+            // 检测Enter键，返回菜单
+            if (replayInputManager.isKeyPressed(10)) { // Enter键
+                returnToMenu();
+            }
             return;
         }
 
-        if (keyframes.size() < 1) return;
-        time += deltaTime;
-        // 限制在最后关键帧处停止（也可选择循环播放）
-        double lastT = keyframes.get(keyframes.size() - 1).t;
-        if (time > lastT) {
-            time = (float)lastT;
+        processKeyframes();
+    }
+    
+    /**
+     * 处理关键帧数据，根据时间戳生成敌人
+     */
+    private void processKeyframes() {
+        if (keyframes == null || keyframes.isEmpty()) {
+            return;
         }
-
-        // 查找区间
-        Keyframe a = keyframes.get(0);
-        Keyframe b = keyframes.get(keyframes.size() - 1);
-        for (int i = 0; i < keyframes.size() - 1; i++) {
-            Keyframe k1 = keyframes.get(i);
-            Keyframe k2 = keyframes.get(i + 1);
-            if (time >= k1.t && time <= k2.t) { a = k1; b = k2; break; }
-        }
-        double span = Math.max(1e-6, b.t - a.t);
-        double u = Math.min(1.0, Math.max(0.0, (time - a.t) / span));
-        // 调试输出节流
         
+        // 检查当前时间是否到达下一个关键帧
+        while (currentKeyframeIndex < keyframes.size()) {
+            KeyFrame keyframe = keyframes.get(currentKeyframeIndex);
+            
+            if (replayTime >= keyframe.timestamp) {
+                // 处理这个关键帧中的敌人
+                processKeyframeEnemies(keyframe);
+                // 处理这个关键帧中的玩家信息
+                processKeyframePlayers(keyframe);
+                currentKeyframeIndex++;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    /**
+     * 处理关键帧中的敌人数据
+     */
+    private void processKeyframeEnemies(KeyFrame keyframe) {
+        if (keyframe.enemyInfos == null) {
+            return;
+        }
+        
+        // 收集当前关键帧中存在的敌人ID
+        Set<Integer> currentFrameEnemyIds = new HashSet<>();
+        
+        for (KeyFrame.EnemyInfo enemyInfo : keyframe.enemyInfos) {
+            currentFrameEnemyIds.add(enemyInfo.enemyId);
+            
+            // 检查敌人是否已经存在
+            GameObject existingEnemy = enemyIdMap.get(enemyInfo.enemyId);
+            
+            if (existingEnemy == null) {
+                // 创建新敌人
+                GameObject enemy = EntityFactory.createEnemy(enemyInfo.position, enemyInfo.velocity, renderer, this);
+                enemyIdMap.put(enemyInfo.enemyId, enemy);
+            } else {
+                // 更新现有敌人的位置和速度
+                updateEnemyState(existingEnemy, enemyInfo);
+                // 确保敌人是活动的
+                existingEnemy.setActive(true);
+            }
+        }
+        
+        // 处理在当前关键帧中消失的敌人
+        handleMissingEnemies(currentFrameEnemyIds);
+    }
+    
+    /**
+     * 处理在当前关键帧中消失的敌人
+     */
+    private void handleMissingEnemies(Set<Integer> currentFrameEnemyIds) {
+        // 找出在当前关键帧中不存在的敌人
+        for (Map.Entry<Integer, GameObject> entry : enemyIdMap.entrySet()) {
+            int enemyId = entry.getKey();
+            GameObject enemy = entry.getValue();
+            
+            if (!currentFrameEnemyIds.contains(enemyId)) {
+                // 这个敌人在当前关键帧中不存在，设置为非活动状态
+                enemy.setActive(false);
+            }
+        }
+    }
+    
+    /**
+     * 更新敌人的状态（位置和速度）
+     */
+    private void updateEnemyState(GameObject enemy, KeyFrame.EnemyInfo enemyInfo) {
+        // 更新变换组件
+        var transform = enemy.getComponent(com.gameengine.components.TransformComponent.class);
+        if (transform != null) {
+            transform.setPosition(enemyInfo.position);
+        }
+        
+        // 更新物理组件
+        var physics = enemy.getComponent(com.gameengine.components.PhysicsComponent.class);
+        if (physics != null) {
+            physics.setVelocity(enemyInfo.velocity);
+        }
+    }
+    
+    /**
+     * 处理关键帧中的玩家数据
+     */
+    private void processKeyframePlayers(KeyFrame keyframe) {
+        if (keyframe.playerInfos == null) {
+            return;
+        }
+        
+        // 收集当前关键帧中存在的玩家ID
+        Set<Integer> currentFramePlayerIds = new HashSet<>();
+        
+        for (KeyFrame.PlayerInfo playerInfo : keyframe.playerInfos) {
+            int playerId = keyframe.playerInfos.indexOf(playerInfo) + 1;
+            currentFramePlayerIds.add(playerId);
+            
+            GameObject existingPlayer = playerIdMap.get(playerId);
+            
+            if (existingPlayer == null) {
+                // 在回放模式下，玩家应该已经存在，不应该创建新的玩家
+                // 查找场景中已有的玩家对象
+                for (GameObject obj : getGameObjects()) {
+                    if ("Player".equals(obj.getName()) && !playerIdMap.containsValue(obj)) {
+                        // 找到未映射的玩家对象
+                        playerIdMap.put(playerId, obj);
+                        existingPlayer = obj;
+                        break;
+                    }
+                }
+                
+                // 如果仍然没有找到玩家，则创建玩家（这种情况不应该发生）
+                if (existingPlayer == null) {
+                    System.err.println("警告：在回放模式下创建新玩家，这可能不是预期的行为");
+                    GameObject player = EntityFactory.createPlayer(renderer, this);
+                    playerIdMap.put(playerId, player);
+                    existingPlayer = player;
+                }
+            }
+            
+            // 更新玩家状态
+            updatePlayerState(existingPlayer, playerInfo);
+            existingPlayer.setActive(true);
+        }
 
-        updateInterpolatedPositions(a, b, (float)u);
+        handleMissingPlayers(currentFramePlayerIds);
+    }
+    
+    /**
+     * 更新玩家的状态（血量和分数）
+     */
+    private void updatePlayerState(GameObject player, KeyFrame.PlayerInfo playerInfo) {
+        HealthComponent health = player.getComponent(HealthComponent.class);
+        ScoreComponent score = player.getComponent(ScoreComponent.class);
+        
+        if (health != null) {
+            health.setCurrentHealth(playerInfo.health);
+        }
+        
+        if (score != null) {
+            score.setScore(playerInfo.score);
+        }
+    }
+    
+    /**
+     * 处理在当前关键帧中消失的玩家
+     */
+    private void handleMissingPlayers(Set<Integer> currentFramePlayerIds) {
+        // 找出在当前关键帧中不存在的玩家
+        for (Map.Entry<Integer, GameObject> entry : playerIdMap.entrySet()) {
+            int playerId = entry.getKey();
+            GameObject player = entry.getValue();
+            
+            if (!currentFramePlayerIds.contains(playerId)) {
+                // 这个玩家在当前关键帧中不存在，设置为非活动状态
+                player.setActive(false);
+            }
+        }
+    }
+
+    /**
+     * 返回菜单场景
+     */
+    private void returnToMenu() {
+        replayInputManager.reset(); // 重置回放状态
+        MenuScene menuScene = new MenuScene(engine, "MainMenu");
+        engine.setScene(menuScene);
     }
 
     @Override
     public void render() {
-        renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.06f, 0.06f, 0.08f, 1.0f);
-        if (recordingPath == null) {
-            renderFileList();
-            return;
-        }
-        // 基于 Transform 手动绘制（回放对象没有附带 RenderComponent）
+        // 绘制背景
+        renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.1f, 0.1f, 0.2f, 1.0f);
+
+        // 渲染所有对象
         super.render();
-        String hint = "REPLAY: ESC to return";
-        float w = hint.length() * 12.0f;
-        renderer.drawText(renderer.getWidth()/2.0f - w/2.0f, 30, hint, 0.8f, 0.8f, 0.8f, 1.0f);
-    }
 
-    private void loadRecording(String path) {
-        keyframes.clear();
-        com.gameengine.recording.RecordingStorage storage = new com.gameengine.recording.FileRecordingStorage();
-        try {
-            for (String line : storage.readLines(path)) {
-                if (line.contains("\"type\":\"keyframe\"")) {
-                    Keyframe kf = new Keyframe();
-                    kf.t = com.gameengine.recording.RecordingJson.parseDouble(com.gameengine.recording.RecordingJson.field(line, "t"));
-                    // 解析 entities 列表中的若干 {"id":"name","x":num,"y":num}
-                    int idx = line.indexOf("\"entities\":[");
-                    if (idx >= 0) {
-                        int bracket = line.indexOf('[', idx);
-                        String arr = bracket >= 0 ? com.gameengine.recording.RecordingJson.extractArray(line, bracket) : "";
-                        String[] parts = com.gameengine.recording.RecordingJson.splitTopLevel(arr);
-                        for (String p : parts) {
-                            Keyframe.EntityInfo ei = new Keyframe.EntityInfo();
-                            ei.id = com.gameengine.recording.RecordingJson.stripQuotes(com.gameengine.recording.RecordingJson.field(p, "id"));
-                            double x = com.gameengine.recording.RecordingJson.parseDouble(com.gameengine.recording.RecordingJson.field(p, "x"));
-                            double y = com.gameengine.recording.RecordingJson.parseDouble(com.gameengine.recording.RecordingJson.field(p, "y"));
-                            ei.pos = new Vector2((float)x, (float)y);
-                            String rt = com.gameengine.recording.RecordingJson.stripQuotes(com.gameengine.recording.RecordingJson.field(p, "rt"));
-                            ei.rt = rt;
-                            ei.w = (float)com.gameengine.recording.RecordingJson.parseDouble(com.gameengine.recording.RecordingJson.field(p, "w"));
-                            ei.h = (float)com.gameengine.recording.RecordingJson.parseDouble(com.gameengine.recording.RecordingJson.field(p, "h"));
-                            String colorArr = com.gameengine.recording.RecordingJson.field(p, "color");
-                            if (colorArr != null && colorArr.startsWith("[")) {
-                                String c = colorArr.substring(1, Math.max(1, colorArr.indexOf(']', 1)));
-                                String[] cs = c.split(",");
-                                if (cs.length >= 3) {
-                                    try {
-                                        ei.r = Float.parseFloat(cs[0].trim());
-                                        ei.g = Float.parseFloat(cs[1].trim());
-                                        ei.b = Float.parseFloat(cs[2].trim());
-                                        if (cs.length >= 4) ei.a = Float.parseFloat(cs[3].trim());
-                                    } catch (Exception ignored) {}
-                                }
-                            }
-                            kf.entities.add(ei);
-                        }
-                    }
-                    keyframes.add(kf);
-                }
-            }
-        } catch (Exception e) {
-            
-        }
-        keyframes.sort(Comparator.comparingDouble(k -> k.t));
-    }
-
-    private void buildObjectsFromFirstKeyframe() {
-        if (keyframes.isEmpty()) return;
-        Keyframe kf0 = keyframes.get(0);
-        // 按实体构建对象（使用预制），实现与游戏内一致外观
-        objectList.clear();
-        clear();
-        for (int i = 0; i < kf0.entities.size(); i++) {
-            GameObject obj = buildObjectFromEntity(kf0.entities.get(i), i);
-            addGameObject(obj);
-            objectList.add(obj);
-        }
-        time = 0f;
-    }
-
-    private void ensureObjectCount(int n) {
-        while (objectList.size() < n) {
-            GameObject obj = new GameObject("RObj#" + objectList.size());
-            obj.addComponent(new TransformComponent(new Vector2(0, 0)));
-            // 为回放对象添加可渲染组件（默认外观，稍后在 refreshRenderFromKeyframe 应用真实外观）
-            addGameObject(obj);
-            objectList.add(obj);
-        }
-        while (objectList.size() > n) {
-            GameObject obj = objectList.remove(objectList.size() - 1);
-            obj.setActive(false);
+        // 检查游戏状态，显示死亡画面
+        if (gameLogic.getGameState() == GameLogic.GameState.GAME_OVER) {
+            renderGameOverScreen();
         }
     }
-
     
-    private void updateInterpolatedPositions(Keyframe a, Keyframe b, float u) {
-        int n = Math.min(a.entities.size(), b.entities.size());
-        ensureObjectCount(n);
-        for (int i = 0; i < n; i++) {
-            Vector2 pa = a.entities.get(i).pos;
-            Vector2 pb = b.entities.get(i).pos;
-            float x = (float)((1.0 - u) * pa.x + u * pb.x);
-            float y = (float)((1.0 - u) * pa.y + u * pb.y);
-            GameObject obj = objectList.get(i);
-            TransformComponent tc = obj.getComponent(TransformComponent.class);
-            if (tc != null) tc.setPosition(new Vector2(x, y));
+    private void createPlayer() {
+        EntityFactory.createPlayer(renderer, this);
+    }
+    
+    private void createDecorations() {
+        for (int i = 0; i < 5; i++) {
+            createDecoration();
         }
     }
-
-    private GameObject buildObjectFromEntity(Keyframe.EntityInfo ei, int index) {
-        GameObject obj;
-        if ("Player".equalsIgnoreCase(ei.id)) {
-            obj = com.gameengine.example.EntityFactory.createPlayerVisual(renderer);
-        } else if ("AIPlayer".equalsIgnoreCase(ei.id)) {
-            float w2 = (ei.w > 0 ? ei.w : 20);
-            float h2 = (ei.h > 0 ? ei.h : 20);
-            obj = com.gameengine.example.EntityFactory.createAIVisual(renderer, w2, h2, ei.r, ei.g, ei.b, ei.a);
-        } else {
-            if ("CIRCLE".equals(ei.rt)) {
-                GameObject tmp = new GameObject(ei.id == null ? ("Obj#"+index) : ei.id);
-                tmp.addComponent(new TransformComponent(new Vector2(0,0)));
-                com.gameengine.components.RenderComponent rc = tmp.addComponent(
-                    new com.gameengine.components.RenderComponent(
-                        com.gameengine.components.RenderComponent.RenderType.CIRCLE,
-                        new Vector2(Math.max(1, ei.w), Math.max(1, ei.h)),
-                        new com.gameengine.components.RenderComponent.Color(ei.r, ei.g, ei.b, ei.a)
-                    )
-                );
-                rc.setRenderer(renderer);
-                obj = tmp;
-            } else {
-                obj = com.gameengine.example.EntityFactory.createAIVisual(renderer, Math.max(1, ei.w>0?ei.w:10), Math.max(1, ei.h>0?ei.h:10), ei.r, ei.g, ei.b, ei.a);
+    
+    private void createDecoration() {
+        // 随机位置 - 避免在UI区域生成
+        Vector2 position = new Vector2(
+            random.nextFloat() * (renderer.getWidth() - UIComponent.UI_WIDTH),
+            random.nextFloat() * renderer.getHeight()
+        );
+        
+        // 使用 EntityFactory 创建装饰物
+        EntityFactory.createDecoration(position, renderer, this);
+    }
+    
+    private void createUIArea() {
+        // 创建UI区域对象
+        GameObject uiArea = new GameObject("UIArea") {
+            @Override
+            public void update(float deltaTime) {
+                super.update(deltaTime);
+                updateComponents(deltaTime);
             }
-            obj.setName(ei.id == null ? ("Obj#"+index) : ei.id);
-        }
-        TransformComponent tc = obj.getComponent(TransformComponent.class);
-        if (tc == null) obj.addComponent(new TransformComponent(new Vector2(ei.pos)));
-        else tc.setPosition(new Vector2(ei.pos));
-        return obj;
-    }
-
-    // ========== 文件列表模式 ==========
-    private List<File> recordingFiles;
-    private int selectedIndex = 0;
-
-    private void ensureFilesListed() {
-        if (recordingFiles != null) return;
-        com.gameengine.recording.RecordingStorage storage = new com.gameengine.recording.FileRecordingStorage();
-        recordingFiles = storage.listRecordings();
-    }
-
-    private void handleFileSelection() {
-        ensureFilesListed();
-        if (input.isKeyJustPressed(38) || input.isKeyJustPressed(265)) { // up (AWT 38 / GLFW 265)
-            selectedIndex = (selectedIndex - 1 + Math.max(1, recordingFiles.size())) % Math.max(1, recordingFiles.size());
-        } else if (input.isKeyJustPressed(40) || input.isKeyJustPressed(264)) { // down (AWT 40 / GLFW 264)
-            selectedIndex = (selectedIndex + 1) % Math.max(1, recordingFiles.size());
-        } else if (input.isKeyJustPressed(10) || input.isKeyJustPressed(32) || input.isKeyJustPressed(257) || input.isKeyJustPressed(335)) { // enter/space (AWT 10/32, GLFW 257/335)
-            if (recordingFiles.size() > 0) {
-                String path = recordingFiles.get(selectedIndex).getAbsolutePath();
-                this.recordingPath = path;
-                clear();
-                initialize();
+            
+            @Override
+            public void render() {
+                renderComponents();
             }
-        } else if (input.isKeyJustPressed(27)) { // esc
-            engine.setScene(new MenuScene(engine, "MainMenu"));
-        }
+        };
+        
+        UIComponent ui = UIComponent.getInstance();
+        ui.setRenderer(renderer);
+        uiArea.addComponent(ui);
+        
+        addGameObject(uiArea);
     }
-
-    private void renderFileList() {
-        ensureFilesListed();
-        int w = renderer.getWidth();
-        int h = renderer.getHeight();
-        String title = "SELECT RECORDING";
-        float tw = title.length() * 16f;
-        renderer.drawText(w/2f - tw/2f, 80, title, 1f,1f,1f,1f);
-
-        if (recordingFiles.isEmpty()) {
-            String none = "NO RECORDINGS FOUND";
-            float nw = none.length() * 14f;
-            renderer.drawText(w/2f - nw/2f, h/2f, none, 0.9f,0.8f,0.2f,1f);
-            String back = "ESC TO RETURN";
-            float bw = back.length() * 12f;
-            renderer.drawText(w/2f - bw/2f, h - 60, back, 0.7f,0.7f,0.7f,1f);
-            return;
-        }
-
-        float startY = 140f;
-        float itemH = 28f;
-        for (int i = 0; i < recordingFiles.size(); i++) {
-            String name = recordingFiles.get(i).getName();
-            float x = 100f;
-            float y = startY + i * itemH;
-            if (i == selectedIndex) {
-                renderer.drawRect(x - 10, y - 6, 600, 24, 0.3f,0.3f,0.4f,0.8f);
-            }
-            renderer.drawText(x, y, name, 0.9f,0.9f,0.9f,1f);
-        }
-
-        String hint = "UP/DOWN SELECT, ENTER PLAY, ESC RETURN";
-        float hw = hint.length() * 12f;
-        renderer.drawText(w/2f - hw/2f, h - 60, hint, 0.7f,0.7f,0.7f,1f);
+    
+    private void renderGameOverScreen() {
+        renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.0f, 0.0f, 0.0f, 0.7f);
+        
+        String deathMessage1 = "YOU DIED";
+        String deathMessage2 = "press 'ENTER' to continue";
+        
+        float centerX = (renderer.getWidth() - 200) / 2;
+        float centerY = (renderer.getHeight() - 200) / 2;
+        
+        renderer.drawText(centerX - 80, centerY - 20, deathMessage1, 1.0f, 0.0f, 0.0f, 1.0f);
+        renderer.drawText(centerX - 180, centerY + 20, deathMessage2, 1.0f, 1.0f, 1.0f, 1.0f);
     }
-
-    // 解析相关逻辑已移至 RecordingJson
 }
-
-

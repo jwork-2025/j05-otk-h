@@ -1,12 +1,17 @@
 package com.gameengine.recording;
 
 import com.gameengine.components.TransformComponent;
+import com.gameengine.components.PhysicsComponent;
+import com.gameengine.components.HealthComponent;
+import com.gameengine.components.ScoreComponent;
 import com.gameengine.core.GameObject;
 import com.gameengine.input.InputManager;
 import com.gameengine.scene.Scene;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -24,6 +29,15 @@ public class RecordingService {
     private final double warmupSec = 0.1; // 等待一帧让场景对象完成初始化
     private final DecimalFormat qfmt;
     private Scene lastScene;
+    
+    // 跟踪当前按下的按键状态
+    private Set<Integer> currentPressedKeys;
+    
+    // 跟踪敌人对象到ID的映射，确保标号一致性
+    private java.util.Map<GameObject, Integer> enemyIdMap;
+    
+    // 跟踪玩家对象到ID的映射，确保标号一致性
+    private java.util.Map<GameObject, Integer> playerIdMap;
 
     public RecordingService(RecordingConfig config) {
         this.config = config;
@@ -35,6 +49,9 @@ public class RecordingService {
         this.qfmt = new DecimalFormat();
         this.qfmt.setMaximumFractionDigits(Math.max(0, config.quantizeDecimals));
         this.qfmt.setGroupingUsed(false);
+        this.currentPressedKeys = new HashSet<>();
+        this.enemyIdMap = new java.util.HashMap<>();
+        this.playerIdMap = new java.util.HashMap<>();
     }
 
     public boolean isRecording() {
@@ -66,15 +83,11 @@ public class RecordingService {
         // header
         enqueue("{\"type\":\"header\",\"version\":1,\"w\":" + width + ",\"h\":" + height + "}");
         keyframeElapsed = 0.0;
+        currentPressedKeys.clear();
     }
 
     public void stop() {
         if (!recording) return;
-        try {
-            if (lastScene != null) {
-                writeKeyframe(lastScene);
-            }
-        } catch (Exception ignored) {}
         recording = false;
         try { writerThread.join(500); } catch (InterruptedException ignored) {}
     }
@@ -83,79 +96,181 @@ public class RecordingService {
         if (!recording) return;
         elapsed += deltaTime;
         keyframeElapsed += deltaTime;
-        sampleAccumulator += deltaTime;
-        lastScene = scene;
 
-        // input events (sample at native frequency, but只写有justPressed)
-        Set<Integer> just = input.getJustPressedKeysSnapshot();
-        if (!just.isEmpty()) {
+        // 记录按键按下事件
+        Set<Integer> justPressedKeys = input.getJustPressedKeysSnapshot();
+        if (!justPressedKeys.isEmpty()) {
             StringBuilder sb = new StringBuilder();
-            sb.append("{\"type\":\"input\",\"t\":").append(qfmt.format(elapsed)).append(",\"keys\":[");
+            sb.append("{\"type\":\"keydown\",\"t\":").append(qfmt.format(elapsed)).append(",\"keys\":[");
             boolean first = true;
-            for (Integer k : just) {
+            for (Integer k : justPressedKeys) {
                 if (!first) sb.append(',');
                 sb.append(k);
                 first = false;
             }
             sb.append("]}");
             enqueue(sb.toString());
+            
+            // 更新当前按下的按键状态
+            currentPressedKeys.addAll(justPressedKeys);
         }
 
-        // sampled deltas placeholder（可扩展）：此处先跳过，保持最小版本
-
-        // periodic keyframe（跳过开头暖机，避免空关键帧）
-        if (elapsed >= warmupSec && keyframeElapsed >= config.keyframeIntervalSec) {
-            if (writeKeyframe(scene)) {
-                keyframeElapsed = 0.0;
+        // 检查按键释放事件
+        Set<Integer> releasedKeys = new HashSet<>();
+        Set<Integer> currentKeys = getCurrentPressedKeys(input);
+        
+        // 找出被释放的按键
+        for (Integer key : currentPressedKeys) {
+            if (!currentKeys.contains(key)) {
+                releasedKeys.add(key);
             }
+        }
+        
+        // 记录按键释放事件
+        if (!releasedKeys.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"type\":\"keyup\",\"t\":").append(qfmt.format(elapsed)).append(",\"keys\":[");
+            boolean first = true;
+            for (Integer k : releasedKeys) {
+                if (!first) sb.append(',');
+                sb.append(k);
+                first = false;
+            }
+            sb.append("]}");
+            enqueue(sb.toString());
+            
+            // 更新当前按下的按键状态
+            currentPressedKeys.removeAll(releasedKeys);
+        }
+        
+        // 更新当前按键状态（用于下一帧比较）
+        currentPressedKeys.retainAll(currentKeys);
+        currentPressedKeys.addAll(currentKeys);
+        
+        // 记录敌人快照
+        if (keyframeElapsed >= config.keyframeIntervalSec) {
+            createKeyframe(scene);
+            keyframeElapsed = 0.0;
+        }
+    }
+    
+    /**
+     * 创建关键帧
+     */
+    void createKeyframe(Scene scene) {
+        recordEnemyInfo(scene);
+        recordPlayerInfo(scene);
+    }
+
+    /**
+     * 记录敌人信息
+     */
+    private void recordEnemyInfo(Scene scene) {
+        List<KeyFrame.EnemyInfo> enemyInfos = new ArrayList<>();
+        
+        for (GameObject obj : scene.getGameObjects()) {
+            if ("Enemy".equals(obj.getName())) {
+                TransformComponent transform = obj.getComponent(TransformComponent.class);
+                PhysicsComponent physics = obj.getComponent(PhysicsComponent.class);
+                
+                if (transform != null && physics != null) {
+                    // 获取或分配敌人ID
+                    Integer enemyId = enemyIdMap.get(obj);
+                    if (enemyId == null) {
+                        // 新敌人，分配新ID
+                        enemyId = enemyIdMap.size() + 1;
+                        enemyIdMap.put(obj, enemyId);
+                    }
+                    
+                    KeyFrame.EnemyInfo info = new KeyFrame.EnemyInfo();
+                    info.enemyId = enemyId;
+                    info.position = transform.getPosition();
+                    info.velocity = physics.getVelocity();
+                    enemyInfos.add(info);
+                }
+            }
+        }
+        
+        if (!enemyInfos.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"type\":\"snapshot\",\"t\":").append(qfmt.format(elapsed)).append(",\"enemies\":[");
+            
+            boolean first = true;
+            for (KeyFrame.EnemyInfo info : enemyInfos) {
+                if (!first) sb.append(',');
+                sb.append(String.format("{\"id\":%d,\"x\":%.2f,\"y\":%.2f,\"vx\":%.2f,\"vy\":%.2f}",
+                        info.enemyId, info.position.x, info.position.y, info.velocity.x, info.velocity.y));
+                first = false;
+            }
+            
+            sb.append("]}");
+            enqueue(sb.toString());
         }
     }
 
-    private boolean writeKeyframe(Scene scene) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\"type\":\"keyframe\",\"t\":").append(qfmt.format(elapsed)).append(",\"entities\":[");
-        List<GameObject> objs = scene.getGameObjects();
-        boolean first = true;
-        int count = 0;
-        for (GameObject obj : objs) {
-            TransformComponent tc = obj.getComponent(TransformComponent.class);
-            if (tc == null) continue;
-            float x = tc.getPosition().x;
-            float y = tc.getPosition().y;
-            if (!first) sb.append(',');
-            sb.append('{')
-              .append("\"id\":\"").append(obj.getName()).append("\",")
-              .append("\"x\":").append(qfmt.format(x)).append(',')
-              .append("\"y\":").append(qfmt.format(y));
-
-            // 可选渲染信息（若对象带有 RenderComponent，则记录形状、尺寸、颜色）
-            com.gameengine.components.RenderComponent rc = obj.getComponent(com.gameengine.components.RenderComponent.class);
-            if (rc != null) {
-                com.gameengine.components.RenderComponent.RenderType rt = rc.getRenderType();
-                com.gameengine.math.Vector2 sz = rc.getSize();
-                com.gameengine.components.RenderComponent.Color col = rc.getColor();
-                sb.append(',')
-                  .append("\"rt\":\"").append(rt.name()).append("\",")
-                  .append("\"w\":").append(qfmt.format(sz.x)).append(',')
-                  .append("\"h\":").append(qfmt.format(sz.y)).append(',')
-                  .append("\"color\":[")
-                  .append(qfmt.format(col.r)).append(',')
-                  .append(qfmt.format(col.g)).append(',')
-                  .append(qfmt.format(col.b)).append(',')
-                  .append(qfmt.format(col.a)).append(']');
-            } else {
-                // 标记自定义渲染（如 Player），方便回放做近似还原
-                sb.append(',').append("\"rt\":\"CUSTOM\"");
+    /**
+     * 记录玩家信息
+     */
+    private void recordPlayerInfo(Scene scene) {
+        // 记录玩家信息
+        List<KeyFrame.PlayerInfo> playerInfos = new ArrayList<>();
+        for (GameObject obj : scene.getGameObjects()) {
+            if ("Player".equals(obj.getName())) {
+                HealthComponent health = obj.getComponent(HealthComponent.class);
+                ScoreComponent score = obj.getComponent(ScoreComponent.class);
+                
+                // 获取或分配玩家ID
+                Integer playerId = playerIdMap.get(obj);
+                if (playerId == null) {
+                    // 新玩家，分配新ID
+                    playerId = playerIdMap.size() + 1;
+                    playerIdMap.put(obj, playerId);
+                }
+                
+                KeyFrame.PlayerInfo playerInfo = new KeyFrame.PlayerInfo();
+                if (health != null) {
+                    playerInfo.health = health.getCurrentHealth();
+                }
+                if (score != null) {
+                    playerInfo.score = score.getScore();
+                }
+                playerInfos.add(playerInfo);
             }
-
-            sb.append('}');
-            first = false;
-            count++;
         }
-        sb.append("]}");
-        if (count == 0) return false;
-        enqueue(sb.toString());
-        return true;
+        
+        // 生成玩家快照记录
+        if (!playerInfos.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"type\":\"snapshot\",\"t\":").append(qfmt.format(elapsed)).append(",\"players\":[");
+            
+            boolean first = true;
+            for (KeyFrame.PlayerInfo playerInfo : playerInfos) {
+                if (!first) sb.append(',');
+                sb.append(String.format("{\"score\":%d,\"health\":%d}",
+                        playerInfo.score, playerInfo.health));
+                first = false;
+            }
+            
+            sb.append("]}");
+            enqueue(sb.toString());
+        }
+    }
+
+        /**
+     * 获取当前按下的所有按键
+     */
+    private Set<Integer> getCurrentPressedKeys(InputManager input) {
+        Set<Integer> currentKeys = new HashSet<>();
+        if (input.isKeyPressed(87)) currentKeys.add(87); // W
+        if (input.isKeyPressed(83)) currentKeys.add(83); // S
+        if (input.isKeyPressed(65)) currentKeys.add(65); // A
+        if (input.isKeyPressed(68)) currentKeys.add(68); // D
+        if (input.isKeyPressed(90)) currentKeys.add(90); // Z (射击)
+        if (input.isKeyPressed(38)) currentKeys.add(38); // 上箭头
+        if (input.isKeyPressed(40)) currentKeys.add(40); // 下箭头
+        if (input.isKeyPressed(37)) currentKeys.add(37); // 左箭头
+        if (input.isKeyPressed(39)) currentKeys.add(39); // 右箭头
+        return currentKeys;
     }
 
     private void enqueue(String line) {
@@ -164,5 +279,3 @@ public class RecordingService {
         }
     }
 }
-
-

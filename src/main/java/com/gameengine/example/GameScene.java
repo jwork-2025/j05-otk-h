@@ -1,38 +1,27 @@
 package com.gameengine.example;
 
-import com.gameengine.components.PhysicsComponent;
-import com.gameengine.components.RenderComponent;
-import com.gameengine.components.TransformComponent;
+import com.gameengine.scene.Scene;
 import com.gameengine.core.GameEngine;
 import com.gameengine.core.GameLogic;
 import com.gameengine.core.GameObject;
-import com.gameengine.core.ParticleSystem;
-import com.gameengine.graphics.IRenderer;
 import com.gameengine.math.Vector2;
-import com.gameengine.scene.Scene;
-
-import java.util.*;
+import com.gameengine.graphics.IRenderer;
+import com.gameengine.components.*;
+import com.gameengine.input.InputManager;
+import java.util.Random;
 
 public class GameScene extends Scene {
-    private final GameEngine engine;
+    public final GameEngine engine;
     private IRenderer renderer;
     private Random random;
     private float time;
     private GameLogic gameLogic;
-    private ParticleSystem playerParticles;
-    private List<ParticleSystem> collisionParticles;
-    private Map<GameObject, ParticleSystem> aiPlayerParticles;
-    private boolean waitingReturn;
-    private float waitInputTimer;
-    private float freezeTimer;
-    private final float inputCooldown = 0.25f;
-    private final float freezeDelay = 0.20f;
 
     public GameScene(GameEngine engine) {
-        super("GameScene");
+        super("GameEngine");
         this.engine = engine;
     }
-
+    
     @Override
     public void initialize() {
         super.initialize();
@@ -40,338 +29,151 @@ public class GameScene extends Scene {
         this.random = new Random();
         this.time = 0;
         this.gameLogic = new GameLogic(this);
-        this.gameLogic.setGameEngine(engine);
-        this.waitingReturn = false;
-        this.waitInputTimer = 0f;
-        this.freezeTimer = 0f;
 
+        // 创建游戏对象
         createPlayer();
-        createAIPlayers();
         createDecorations();
+        createUIArea();
 
-        collisionParticles = new ArrayList<>();
-        aiPlayerParticles = new HashMap<>();
-
-        playerParticles = new ParticleSystem(renderer, new Vector2(renderer.getWidth() / 2.0f, renderer.getHeight() / 2.0f));
-        playerParticles.setActive(true);
-        
+        // playBGM();
     }
-
+    
     @Override
     public void update(float deltaTime) {
         super.update(deltaTime);
         time += deltaTime;
 
-        gameLogic.handlePlayerInput(deltaTime);
-        gameLogic.handleAIPlayerMovement(deltaTime);
-        gameLogic.handleAIPlayerAvoidance(deltaTime);
-
-        boolean wasGameOver = gameLogic.isGameOver();
+        // 使用游戏逻辑类处理游戏规则
+        gameLogic.handlePlayerInput();
+        gameLogic.handleEnemyShooting();
+        gameLogic.updatePhysics();
         gameLogic.checkCollisions();
 
-        if (gameLogic.isGameOver() && !wasGameOver) {
-            GameObject player = gameLogic.getUserPlayer();
-            if (player != null) {
-                TransformComponent transform = player.getComponent(TransformComponent.class);
-                if (transform != null) {
-                    ParticleSystem.Config cfg = new ParticleSystem.Config();
-                    cfg.initialCount = 0;
-                    cfg.spawnRate = 9999f;
-                    cfg.opacityMultiplier = 1.0f;
-                    cfg.minRenderSize = 3.0f;
-                    cfg.burstSpeedMin = 250f;
-                    cfg.burstSpeedMax = 520f;
-                    cfg.burstLifeMin = 0.5f;
-                    cfg.burstLifeMax = 1.2f;
-                    cfg.burstSizeMin = 18f;
-                    cfg.burstSizeMax = 42f;
-                    cfg.burstR = 1.0f;
-                    cfg.burstGMin = 0.0f;
-                    cfg.burstGMax = 0.05f;
-                    cfg.burstB = 0.0f;
-                    ParticleSystem explosion = new ParticleSystem(renderer, transform.getPosition(), cfg);
-                    explosion.burst(180);
-                    collisionParticles.add(explosion);
-                    waitingReturn = true;
-                    waitInputTimer = 0f;
-                    freezeTimer = 0f;
-                }
+        // 检查是否需要返回菜单
+        if (gameLogic.getGameState() == GameLogic.GameState.GAME_OVER) {
+            // 检测Enter键，返回菜单
+            if (InputManager.getInstance().isKeyPressed(10)) { // Enter键
+                returnToMenu();
             }
-        }
-
-        updateParticles(deltaTime);
-
-        if (waitingReturn) {
-            waitInputTimer += deltaTime;
-            freezeTimer += deltaTime;
-        }
-
-        if (waitingReturn && waitInputTimer >= inputCooldown && (engine.getInputManager().isAnyKeyJustPressed() || engine.getInputManager().isMouseButtonJustPressed(0))) {
-            MenuScene menu = new MenuScene(engine, "MainMenu");
-            engine.setScene(menu);
             return;
         }
 
-        if (time >= 1.0f) {
-            createAIPlayer();
+        // 生成新敌人 - 仅在游戏进行中生成
+        if (gameLogic.getGameState() == GameLogic.GameState.PLAYING && time > 2.0f) {
+            createEnemy();
             time = 0;
         }
     }
 
-    private void updateParticles(float deltaTime) {
-        boolean freeze = waitingReturn && freezeTimer >= freezeDelay;
-
-        if (playerParticles != null && !freeze) {
-            GameObject player = gameLogic.getUserPlayer();
-            if (player != null) {
-                TransformComponent transform = player.getComponent(TransformComponent.class);
-                if (transform != null) {
-                    Vector2 playerPos = transform.getPosition();
-                    playerParticles.setPosition(playerPos);
-                }
-            }
-            playerParticles.update(deltaTime);
-        }
-
-        List<GameObject> aiPlayers = gameLogic.getAIPlayers();
-        if (!freeze) {
-            for (GameObject aiPlayer : aiPlayers) {
-                if (aiPlayer != null && aiPlayer.isActive()) {
-                    ParticleSystem particles = aiPlayerParticles.get(aiPlayer);
-                    if (particles == null) {
-                        TransformComponent transform = aiPlayer.getComponent(TransformComponent.class);
-                        if (transform != null) {
-                            particles = new ParticleSystem(renderer, transform.getPosition(), ParticleSystem.Config.light());
-                            particles.setActive(true);
-                            aiPlayerParticles.put(aiPlayer, particles);
-                        }
-                    }
-                    if (particles != null) {
-                        TransformComponent transform = aiPlayer.getComponent(TransformComponent.class);
-                        if (transform != null) {
-                            particles.setPosition(transform.getPosition());
-                        }
-                        particles.update(deltaTime);
-                    }
-                }
-            }
-        }
-
-        List<GameObject> toRemove = new ArrayList<>();
-        for (Map.Entry<GameObject, ParticleSystem> entry : aiPlayerParticles.entrySet()) {
-            if (!entry.getKey().isActive() || !aiPlayers.contains(entry.getKey())) {
-                toRemove.add(entry.getKey());
-            }
-        }
-        for (GameObject removed : toRemove) {
-            aiPlayerParticles.remove(removed);
-        }
-
-        for (int i = collisionParticles.size() - 1; i >= 0; i--) {
-            ParticleSystem ps = collisionParticles.get(i);
-            if (ps != null) {
-                if (!freeze) {
-                    ps.update(deltaTime);
-                }
-            }
-        }
+    /**
+     * 返回菜单场景
+     */
+    private void returnToMenu() {
+        MenuScene menuScene = new MenuScene(engine, "MainMenu");
+        engine.setScene(menuScene);
     }
 
     @Override
     public void render() {
+        // 绘制背景
         renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.1f, 0.1f, 0.2f, 1.0f);
 
+        // 渲染所有对象
         super.render();
 
-        renderParticles();
-
-        if (gameLogic.isGameOver()) {
-            float cx = renderer.getWidth() / 2.0f;
-            float cy = renderer.getHeight() / 2.0f;
-            renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.0f, 0.0f, 0.0f, 0.35f);
-            renderer.drawRect(cx - 200, cy - 60, 400, 120, 0.0f, 0.0f, 0.0f, 0.7f);
-            renderer.drawText(cx - 100, cy - 10, "GAME OVER", 1.0f, 1.0f, 1.0f, 1.0f);
-            renderer.drawText(cx - 180, cy + 30, "PRESS ANY KEY TO RETURN", 0.8f, 0.8f, 0.8f, 1.0f);
+        // 检查游戏状态，显示死亡画面
+        if (gameLogic.getGameState() == GameLogic.GameState.GAME_OVER) {
+            renderGameOverScreen();
         }
     }
-
-    private void renderParticles() {
-        if (playerParticles != null) {
-            int count = playerParticles.getParticleCount();
-            if (count > 0) {
-                playerParticles.render();
-            }
-        }
-
-        for (ParticleSystem ps : aiPlayerParticles.values()) {
-            if (ps != null && ps.getParticleCount() > 0) {
-                ps.render();
-            }
-        }
-
-        for (ParticleSystem ps : collisionParticles) {
-            if (ps != null && ps.getParticleCount() > 0) {
-                ps.render();
-            }
-        }
-    }
-
+    
     private void createPlayer() {
-        GameObject player = new GameObject("Player") {
-            private Vector2 basePosition;
-
-            @Override
-            public void update(float deltaTime) {
-                super.update(deltaTime);
-                updateComponents(deltaTime);
-                updateBodyParts();
-            }
-
-            @Override
-            public void render() {
-                renderBodyParts();
-            }
-
-            private void updateBodyParts() {
-                TransformComponent transform = getComponent(TransformComponent.class);
-                if (transform != null) {
-                    basePosition = transform.getPosition();
-                }
-            }
-
-            private void renderBodyParts() {
-                if (basePosition == null) return;
-
-                renderer.drawRect(
-                    basePosition.x - 8, basePosition.y - 10, 16, 20,
-                    1.0f, 0.0f, 0.0f, 1.0f
-                );
-
-                renderer.drawRect(
-                    basePosition.x - 6, basePosition.y - 22, 12, 12,
-                    1.0f, 0.5f, 0.0f, 1.0f
-                );
-
-                renderer.drawRect(
-                    basePosition.x - 13, basePosition.y - 5, 6, 12,
-                    1.0f, 0.8f, 0.0f, 1.0f
-                );
-
-                renderer.drawRect(
-                    basePosition.x + 7, basePosition.y - 5, 6, 12,
-                    0.0f, 1.0f, 0.0f, 1.0f
-                );
-            }
-        };
-
-        player.addComponent(new TransformComponent(new Vector2(renderer.getWidth() / 2.0f, renderer.getHeight() / 2.0f)));
-
-        PhysicsComponent physics = player.addComponent(new PhysicsComponent(1.0f));
-        physics.setFriction(0.95f);
-
-        addGameObject(player);
+        EntityFactory.createPlayer(renderer, this);
     }
 
-    private void createAIPlayers() {
-        for (int i = 0; i < 30; i++) {
-            createAIPlayer();
-        }
+    private void createEnemy() {
+        // 随机位置 - 避免在UI区域生成
+        Vector2 position = new Vector2(
+                random.nextFloat() * (renderer.getWidth() - UIComponent.UI_WIDTH),
+                random.nextFloat() * renderer.getHeight() / 2);
+
+        // 生成随机速度和方向
+        Random random = new Random();
+        // 随机速度：50-150 像素/秒
+        float speed = 50 + random.nextFloat() * 10;
+        // 随机方向：360度随机角度
+        float angle = random.nextFloat() * 2 * (float) Math.PI;
+        Vector2 direction = new Vector2((float) Math.cos(angle), (float) Math.sin(angle));
+        
+        Vector2 velocity = new Vector2(direction.x * speed, direction.y * speed);
+
+        // 使用 EntityFactory 创建敌人
+        EntityFactory.createEnemy(position, velocity, renderer, this);
     }
-
-    private void createAIPlayer() {
-        GameObject aiPlayer = new GameObject("AIPlayer") {
-            @Override
-            public void update(float deltaTime) {
-                super.update(deltaTime);
-                updateComponents(deltaTime);
-            }
-
-            @Override
-            public void render() {
-                renderComponents();
-            }
-        };
-
-        Vector2 position;
-        do {
-            position = new Vector2(
-                random.nextFloat() * renderer.getWidth(),
-                random.nextFloat() * renderer.getHeight()
-            );
-        } while (position.distance(new Vector2(renderer.getWidth() / 2.0f, renderer.getHeight() / 2.0f)) < 100);
-
-        aiPlayer.addComponent(new TransformComponent(position));
-        // 使用工厂统一外观
-        RenderComponent rc = aiPlayer.addComponent(new RenderComponent(
-            RenderComponent.RenderType.RECTANGLE,
-            new Vector2(20, 20),
-            new RenderComponent.Color(0.0f, 0.8f, 1.0f, 1.0f)
-        ));
-        rc.setRenderer(renderer);
-
-        PhysicsComponent physics = aiPlayer.addComponent(new PhysicsComponent(0.5f));
-        physics.setVelocity(new Vector2(
-            (random.nextFloat() - 0.5f) * 150,
-            (random.nextFloat() - 0.5f) * 150
-        ));
-        physics.setFriction(0.98f);
-
-        addGameObject(aiPlayer);
-    }
-
+    
     private void createDecorations() {
         for (int i = 0; i < 5; i++) {
             createDecoration();
         }
     }
-
+    
     private void createDecoration() {
-        GameObject decoration = new GameObject("Decoration") {
+        // 随机位置 - 避免在UI区域生成
+        Vector2 position = new Vector2(
+            random.nextFloat() * (renderer.getWidth() - UIComponent.UI_WIDTH),
+            random.nextFloat() * renderer.getHeight()
+        );
+        
+        // 使用 EntityFactory 创建装饰物
+        EntityFactory.createDecoration(position, renderer, this);
+    }
+    
+    private void createUIArea() {
+        // 创建UI区域对象
+        GameObject uiArea = new GameObject("UIArea") {
             @Override
             public void update(float deltaTime) {
                 super.update(deltaTime);
                 updateComponents(deltaTime);
             }
-
+            
             @Override
             public void render() {
                 renderComponents();
             }
         };
-
-        Vector2 position = new Vector2(
-            random.nextFloat() * renderer.getWidth(),
-            random.nextFloat() * renderer.getHeight()
-        );
-
-        decoration.addComponent(new TransformComponent(position));
-
-        RenderComponent render = decoration.addComponent(new RenderComponent(
-            RenderComponent.RenderType.CIRCLE,
-            new Vector2(5, 5),
-            new RenderComponent.Color(0.5f, 0.5f, 1.0f, 0.8f)
-        ));
-        render.setRenderer(renderer);
-
-        addGameObject(decoration);
+        
+        UIComponent ui = UIComponent.getInstance();
+        ui.setRenderer(renderer);
+        uiArea.addComponent(ui);
+        
+        addGameObject(uiArea);
     }
-
-    @Override
-    public void clear() {
-        if (gameLogic != null) {
-            gameLogic.cleanup();
-        }
-        if (playerParticles != null) {
-            playerParticles.clear();
-        }
-        if (collisionParticles != null) {
-            for (ParticleSystem ps : collisionParticles) {
-                if (ps != null) ps.clear();
-            }
-            collisionParticles.clear();
-        }
-        super.clear();
+    
+    // private void playBGM() {
+    //     MusicComponent musicComponent = MusicComponent.getInstance();
+        
+    //     String musicPath = "resources/bgm.wav";
+        
+    //     boolean success = musicComponent.playBackgroundMusic(musicPath, true);
+    //     if (success) {
+    //         System.out.println("背景音乐开始播放");
+    //     } else {
+    //         System.out.println("无法播放背景音乐，请确保音乐文件存在: " + musicPath);
+    //         System.out.println("音乐文件应为WAV格式，放置在项目根目录的resources文件夹中");
+    //     }
+    // }
+    
+    private void renderGameOverScreen() {
+        renderer.drawRect(0, 0, renderer.getWidth(), renderer.getHeight(), 0.0f, 0.0f, 0.0f, 0.7f);
+        
+        String deathMessage1 = "YOU DIED";
+        String deathMessage2 = "press 'ENTER' to continue";
+        
+        float centerX = (renderer.getWidth() - 200) / 2;
+        float centerY = (renderer.getHeight() - 200) / 2;
+        
+        renderer.drawText(centerX - 80, centerY - 20, deathMessage1, 1.0f, 0.0f, 0.0f, 1.0f);
+        renderer.drawText(centerX - 180, centerY + 20, deathMessage2, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
-
-

@@ -3,15 +3,11 @@ package com.gameengine.example;
 import com.gameengine.core.GameEngine;
 import com.gameengine.graphics.IRenderer;
 import com.gameengine.input.InputManager;
-import com.gameengine.math.Vector2;
 import com.gameengine.scene.Scene;
 import com.gameengine.recording.RecordingConfig;
 import com.gameengine.recording.RecordingService;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 
 public class MenuScene extends Scene {
     public enum MenuOption {
@@ -27,7 +23,6 @@ public class MenuScene extends Scene {
     private MenuOption[] options;
     private boolean selectionMade;
     private MenuOption selectedOption;
-    private List<String> replayFiles;
     private boolean showReplayInfo;
     private int debugFrames;
     
@@ -40,7 +35,6 @@ public class MenuScene extends Scene {
         this.options = new MenuOption[]{MenuOption.START_GAME, MenuOption.REPLAY, MenuOption.EXIT};
         this.selectionMade = false;
         this.selectedOption = null;
-        this.replayFiles = new ArrayList<>();
         this.showReplayInfo = false;
     }
     
@@ -77,51 +71,15 @@ public class MenuScene extends Scene {
             selectedOption = options[selectedIndex];
             
             if (selectedOption == MenuOption.REPLAY) {
-                engine.disableRecording();
-                Scene replay = new ReplayScene(engine, null);
-                engine.setScene(replay);
+                // 进入回放文件选择界面
+                Scene replayMenu = new ReplayMenuScene(engine);
+                engine.setScene(replayMenu);
             } else if (selectedOption == MenuOption.EXIT) {
                 engine.stop();
                 engine.cleanup();
                 System.exit(0);
             }
         }
-        
-        Vector2 mousePos = inputManager.getMousePosition();
-        if (inputManager.isMouseButtonJustPressed(0)) {
-            float centerY = renderer.getHeight() / 2.0f;
-            float buttonY1 = centerY - 80;
-            float buttonY2 = centerY + 0;
-            float buttonY3 = centerY + 80;
-            
-            if (mousePos.y >= buttonY1 - 30 && mousePos.y <= buttonY1 + 30) {
-                selectedIndex = 0;
-                selectionMade = true;
-                selectedOption = MenuOption.START_GAME;
-            } else if (mousePos.y >= buttonY2 - 30 && mousePos.y <= buttonY2 + 30) {
-                selectedIndex = 1;
-                selectedOption = MenuOption.REPLAY;
-                engine.disableRecording();
-                Scene replay = new ReplayScene(engine, null);
-                engine.setScene(replay);
-            } else if (mousePos.y >= buttonY3 - 30 && mousePos.y <= buttonY3 + 30) {
-                selectedIndex = 2;
-                selectionMade = true;
-                selectedOption = MenuOption.EXIT;
-                engine.stop();
-                engine.cleanup();
-                System.exit(0);
-            }
-        }
-    }
-
-    private String findLatestRecording() {
-        File dir = new File("recordings");
-        if (!dir.exists() || !dir.isDirectory()) return null;
-        File[] files = dir.listFiles((d, name) -> name.endsWith(".json") || name.endsWith(".jsonl"));
-        if (files == null || files.length == 0) return null;
-        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-        return files[0].getAbsolutePath();
     }
     
     private void processSelection() {
@@ -143,9 +101,7 @@ public class MenuScene extends Scene {
             
         }
     }
-    
-    private void switchToReplayScene() {}
-    
+
     @Override
     public void render() {
         if (renderer == null) return;
@@ -212,7 +168,7 @@ public class MenuScene extends Scene {
             renderer.drawText(textX, textY, text, r, g, b, 1.0f);
         }
         
-        String hint1 = "USE ARROWS OR MOUSE TO SELECT, ENTER TO CONFIRM";
+        String hint1 = "USE ARROWS TO SELECT, ENTER TO CONFIRM";
         float hint1Width = hint1.length() * 20.0f;
         float hint1X = centerX - hint1Width / 2.0f;
         renderer.drawText(hint1X, height - 100, hint1, 0.6f, 0.6f, 0.6f, 1.0f);
@@ -231,4 +187,3 @@ public class MenuScene extends Scene {
     
     
 }
-

@@ -126,23 +126,13 @@ public class GPURenderer implements IRenderer {
     
     private void setupInput() {
         GLFW.glfwSetKeyCallback(window, (window, key, scancode, action, mods) -> {
+            // 将GLFW键码转换为Java键码
+            int javaKeyCode = convertGLFWKeyToJava(key);
             if (action == GLFW.GLFW_PRESS) {
-                inputManager.onKeyPressed(key);
+                inputManager.onKeyPressed(javaKeyCode);
             } else if (action == GLFW.GLFW_RELEASE) {
-                inputManager.onKeyReleased(key);
+                inputManager.onKeyReleased(javaKeyCode);
             }
-        });
-        
-        GLFW.glfwSetMouseButtonCallback(window, (window, button, action, mods) -> {
-            if (action == GLFW.GLFW_PRESS) {
-                inputManager.onMousePressed(button);
-            } else if (action == GLFW.GLFW_RELEASE) {
-                inputManager.onMouseReleased(button);
-            }
-        });
-        
-        GLFW.glfwSetCursorPosCallback(window, (window, xpos, ypos) -> {
-            inputManager.onMouseMoved((int)xpos, (int)ypos);
         });
     }
     
@@ -527,6 +517,66 @@ public class GPURenderer implements IRenderer {
         }
     }
     
+    /**
+     * 将GLFW键码转换为Java键码
+     */
+    private int convertGLFWKeyToJava(int glfwKey) {
+        switch (glfwKey) {
+            // 字母键
+            case GLFW.GLFW_KEY_A: return 65; // A
+            case GLFW.GLFW_KEY_B: return 66; // B
+            case GLFW.GLFW_KEY_C: return 67; // C
+            case GLFW.GLFW_KEY_D: return 68; // D
+            case GLFW.GLFW_KEY_E: return 69; // E
+            case GLFW.GLFW_KEY_F: return 70; // F
+            case GLFW.GLFW_KEY_G: return 71; // G
+            case GLFW.GLFW_KEY_H: return 72; // H
+            case GLFW.GLFW_KEY_I: return 73; // I
+            case GLFW.GLFW_KEY_J: return 74; // J
+            case GLFW.GLFW_KEY_K: return 75; // K
+            case GLFW.GLFW_KEY_L: return 76; // L
+            case GLFW.GLFW_KEY_M: return 77; // M
+            case GLFW.GLFW_KEY_N: return 78; // N
+            case GLFW.GLFW_KEY_O: return 79; // O
+            case GLFW.GLFW_KEY_P: return 80; // P
+            case GLFW.GLFW_KEY_Q: return 81; // Q
+            case GLFW.GLFW_KEY_R: return 82; // R
+            case GLFW.GLFW_KEY_S: return 83; // S
+            case GLFW.GLFW_KEY_T: return 84; // T
+            case GLFW.GLFW_KEY_U: return 85; // U
+            case GLFW.GLFW_KEY_V: return 86; // V
+            case GLFW.GLFW_KEY_W: return 87; // W
+            case GLFW.GLFW_KEY_X: return 88; // X
+            case GLFW.GLFW_KEY_Y: return 89; // Y
+            case GLFW.GLFW_KEY_Z: return 90; // Z
+            
+            // 数字键
+            case GLFW.GLFW_KEY_0: return 48; // 0
+            case GLFW.GLFW_KEY_1: return 49; // 1
+            case GLFW.GLFW_KEY_2: return 50; // 2
+            case GLFW.GLFW_KEY_3: return 51; // 3
+            case GLFW.GLFW_KEY_4: return 52; // 4
+            case GLFW.GLFW_KEY_5: return 53; // 5
+            case GLFW.GLFW_KEY_6: return 54; // 6
+            case GLFW.GLFW_KEY_7: return 55; // 7
+            case GLFW.GLFW_KEY_8: return 56; // 8
+            case GLFW.GLFW_KEY_9: return 57; // 9
+            
+            // 方向键
+            case GLFW.GLFW_KEY_UP: return 38;    // 上箭头
+            case GLFW.GLFW_KEY_DOWN: return 40;  // 下箭头
+            case GLFW.GLFW_KEY_LEFT: return 37;  // 左箭头
+            case GLFW.GLFW_KEY_RIGHT: return 39; // 右箭头
+            
+            // 功能键
+            case GLFW.GLFW_KEY_ENTER: return 10; // Enter
+            case GLFW.GLFW_KEY_SPACE: return 32; // Space
+            case GLFW.GLFW_KEY_ESCAPE: return 27; // ESC
+            
+            default: return glfwKey; // 其他键码保持不变
+        }
+    }
+    
     @Override
     public void cleanup() {
         for (Integer textureId : charTextures.values()) {
@@ -562,4 +612,3 @@ public class GPURenderer implements IRenderer {
         return title;
     }
 }
-
